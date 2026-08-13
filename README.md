@@ -2,6 +2,10 @@
 
 A real-time social messaging platform built with React, Node.js, Express, MongoDB and Socket.io.
 
+## Preview
+
+![Social Connect Google sign-in screen](demo/social-connect-login.png)
+
 ## Included capabilities
 
 - Firebase Authentication with Google OAuth, verified by Firebase Admin on the server, then exchanged for a seven-day JWT. All user, message, and media routes require that session token.
