@@ -1,41 +1,13 @@
-const Messages = require("../models/messageModel");
+const Message = require("../models/messageModel");
 
-module.exports.getMessages = async (req, res, next) => {
+exports.addMessage = async (req, res, next) => {
   try {
-    const { from, to } = req.body;
-
-    const messages = await Messages.find({
-      // users: {
-      //   $all: [from, to],
-      // },
-      $or:[{sender : from, reciever : to,},{sender : to, reciever : from,}]
-    }).sort({ updatedAt: 1 });
-
-    const projectedMessages = messages.map((msg) => {
-      return {
-        fromSelf: msg.sender.toString() === from,
-        message: msg.message.text,
-      };
-    });
-    res.json(projectedMessages);
-  } catch (error) {
-    next(error);
-  }
+    const { recipientId, text, media } = req.body;
+    if (!recipientId || (!text?.trim() && !media?.url)) return res.status(400).json({ message: "A recipient and message content are required" });
+    const message = await Message.create({ sender: req.user.id, receiver: recipientId, message: { text: text?.trim() || "", media } });
+    res.status(201).json(message);
+  } catch (error) { next(error); }
 };
-
-module.exports.addMessage = async (req, res, next) => {
-  try {
-    const { from, to, message } = req.body;
-    const data = await Messages.create({
-      message: { text: message },
-      // users: [from, to],
-      sender: from,
-      reciever: to,
-    });
-
-    if (data) return res.json({ msg: "Message added successfully." });
-    else return res.json({ msg: "Failed to add message to the database" });
-  } catch (error) {
-    next(error);
-  }
-};
+exports.getMessages = async (req, res, next) => { try { const messages = await Message.find({ $or: [{ sender: req.user.id, receiver: req.params.userId }, { sender: req.params.userId, receiver: req.user.id }] }).sort({ createdAt: 1 }).limit(100).lean(); res.json(messages); } catch (e) { next(e); } };
+exports.getConversations = async (req, res, next) => { try { const messages = await Message.find({ $or: [{ sender: req.user.id }, { receiver: req.user.id }] }).sort({ createdAt: -1 }).limit(100).populate("sender receiver", "username avatarImage").lean(); const unique = []; const seen = new Set(); for (const message of messages) { const peer = String(message.sender._id) === req.user.id ? message.receiver : message.sender; if (!seen.has(String(peer._id))) { seen.add(String(peer._id)); unique.push({ user: peer, lastMessage: message }); } } res.json(unique); } catch (e) { next(e); } };
+exports.markRead = async (req, res, next) => { try { const message = await Message.findOneAndUpdate({ _id: req.params.id, receiver: req.user.id }, { readAt: new Date() }, { new: true }); if (!message) return res.status(404).json({ message: "Message not found" }); res.json(message); } catch (e) { next(e); } };

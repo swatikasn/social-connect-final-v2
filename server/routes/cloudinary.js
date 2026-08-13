@@ -1,11 +1,10 @@
-const {uploadController} = require("../controllers/cloudinaryController");
-
+const { uploadController, deleteController } = require("../controllers/cloudinaryController");
+const { requireAuth } = require("../middleware/auth");
 const router = require("express").Router();
-const Multer = require("multer");
+const multer = require("multer");
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
-const storage = new Multer.memoryStorage();
-const upload = Multer({storage});
-
-router.post("/upload", upload.single('image'), uploadController);
-
+router.use(requireAuth);
+router.post("/upload", upload.single("image"), uploadController);
+router.delete("/", deleteController);
 module.exports = router;

@@ -1,99 +1,51 @@
 const User = require("../models/userModel");
-const bcrypt = require("bcrypt");
 const Message = require("../models/messageModel");
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+const admin = require("firebase-admin");
 
-module.exports.login = async (req, res, next) => {
-  try {
-    const { username, password } = req.body;
-    const user = await User.findOne({ username });
-    if (!user)
-      return res.json({ msg: "Incorrect Username or Password", status: false });
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid)
-      return res.json({ msg: "Incorrect Username or Password", status: false });
-    delete user.password;
-    return res.json({ status: true, user });
-  } catch (error) {
-    next(error);
-  }
-};
+if (!admin.apps.length && process.env.FIREBASE_SERVICE_ACCOUNT) {
+  admin.initializeApp({ credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)) });
+}
+const publicFields = "username email avatarImage isAvatarImageSet firebaseUid createdAt";
+const session = (user) => jwt.sign({ id: user._id, email: user.email }, process.env.JWT_SECRET, { expiresIn: "7d" });
+const respondWithSession = (res, user, status = 200) => res.status(status).json({ token: session(user), user: user.toObject ? user.toObject() : user });
 
-module.exports.register = async (req, res, next) => {
+exports.register = async (req, res, next) => {
   try {
     const { username, email, password } = req.body;
-    const usernameCheck = await User.findOne({ username });
-    if (usernameCheck)
-      return res.json({ msg: "Username already used", status: false });
-    const emailCheck = await User.findOne({ email });
-    if (emailCheck)
-      return res.json({ msg: "Email already used", status: false });
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const user = await User.create({
-      email,
-      username,
-      password: hashedPassword,
-    });
-    delete user.password;
-    return res.json({ status: true, user });
-  } catch (error) {
-    next(error);
-  }
+    if (!username || !email || !password) return res.status(400).json({ message: "Username, email and password are required" });
+    if (await User.exists({ $or: [{ username }, { email }] })) return res.status(409).json({ message: "Username or email is already used" });
+    const user = await User.create({ username, email, password: await bcrypt.hash(password, 12) });
+    user.password = undefined;
+    respondWithSession(res, user, 201);
+  } catch (error) { next(error); }
 };
 
-module.exports.getAllUsers = async (req, res, next) => {
+exports.login = async (req, res, next) => {
   try {
-    const users = await User.find({ _id: { $ne: req.params.id } }).select([
-      "email","username","avatarImage","_id",
-    ]);
-    return res.json(users);
-  } catch (error) {
-    next(error);
-  }
+    const user = await User.findOne({ email: req.body.email }).select("+password");
+    if (!user || !(await bcrypt.compare(req.body.password || "", user.password))) return res.status(401).json({ message: "Invalid email or password" });
+    user.password = undefined;
+    respondWithSession(res, user);
+  } catch (error) { next(error); }
 };
 
-module.exports.setAvatar = async (req, res, next) => {
+exports.firebaseLogin = async (req, res, next) => {
   try {
-    const userId = req.params.id;
-    const avatarImage = req.body.image;
-    const userData = await User.findByIdAndUpdate(
-      userId,
-      {
-        isAvatarImageSet: true,
-        avatarImage,
-      },
-      { new: true }
-    );
-    return res.json({
-      isSet: userData.isAvatarImageSet,
-      image: userData.avatarImage,
-    });
-  } catch (error) {
-    next(error);
-  }
+    if (!admin.apps.length) return res.status(503).json({ message: "Firebase Admin is not configured" });
+    const decoded = await admin.auth().verifyIdToken(req.body.idToken);
+    const email = decoded.email;
+    if (!email) return res.status(400).json({ message: "Google account email is required" });
+    const username = (decoded.name || email.split("@")[0]).replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 20);
+    const user = await User.findOneAndUpdate({ firebaseUid: decoded.uid }, { $setOnInsert: { email, username, firebaseUid: decoded.uid, avatarImage: decoded.picture || "", isAvatarImageSet: Boolean(decoded.picture) } }, { upsert: true, new: true, setDefaultsOnInsert: true });
+    respondWithSession(res, user);
+  } catch (error) { next(error); }
 };
 
-module.exports.logOut = (req, res, next) => {
-  try {
-    if (!req.params.id) return res.json({ msg: "User id is required " });
-    onlineUsers.delete(req.params.id);
-    return res.status(200).send();
-  } catch (error) {
-    next(error);
-  }
-};
-
-module.exports.deleteUser = async (req, res) => {
-  try {
-    const userId = req.params.id;
-    // Delete user's messages
-    await Message.deleteMany({ 
-      $or: [{ sender: userId }, { receiver: userId }] 
-    });
-    // Delete user
-    await User.findByIdAndDelete(userId);
-    
-    return res.json({ status: true, message: "Account deleted successfully" });
-  } catch (err) {
-    return res.json({ status: false, msg: "Error deleting account" });
-  }
-};
+exports.getMe = async (req, res, next) => { try { res.json(await User.findById(req.user.id).select(publicFields).lean()); } catch (e) { next(e); } };
+exports.updateMe = async (req, res, next) => { try { const user = await User.findByIdAndUpdate(req.user.id, { $set: { username: req.body.username } }, { new: true, runValidators: true }).select(publicFields); res.json(user); } catch (e) { next(e); } };
+exports.setAvatar = async (req, res, next) => { try { const user = await User.findByIdAndUpdate(req.user.id, { avatarImage: req.body.image, isAvatarImageSet: true }, { new: true }).select(publicFields); res.json(user); } catch (e) { next(e); } };
+exports.getUsers = async (req, res, next) => { try { res.json(await User.find({ _id: { $ne: req.user.id } }).select(publicFields).sort({ username: 1 }).lean()); } catch (e) { next(e); } };
+exports.getUser = async (req, res, next) => { try { const user = await User.findById(req.params.id).select(publicFields).lean(); if (!user) return res.status(404).json({ message: "User not found" }); res.json(user); } catch (e) { next(e); } };
+exports.deleteMe = async (req, res, next) => { try { await Message.deleteMany({ $or: [{ sender: req.user.id }, { receiver: req.user.id }] }); await User.findByIdAndDelete(req.user.id); res.status(204).send(); } catch (e) { next(e); } };
